@@ -12,23 +12,18 @@ import SwiftUI
 @MainActor
 @Observable  // This macro should provide ObservableObject conformance automatically
 class AppModel: ObservableObject {  // Explicitly conform to ObservableObject
-    let immersiveSpaceID = "ImmersiveSpace"
-    enum ImmersiveSpaceState {
-        case closed
-        case inTransition
-        case open
-    }
-    var immersiveSpaceState = ImmersiveSpaceState.closed
+  let immersiveSpaceID = "ImmersiveSpace"
+  enum ImmersiveSpaceState {
+    case closed
+    case inTransition
+    case open
+  }
+  var immersiveSpaceState = ImmersiveSpaceState.closed
 
-    // Constants for Bilibili URLs
-    let bilibiliSearchURLBase = "https://search.bilibili.com/all?keyword="
-    let bilibiliVideoHost = "www.bilibili.com"  // Keep for checking if it's a video page
-    let bilibiliVideoPathPrefix = "/video/BV"  // Keep for checking if it's a video page
-    let bilibiliBangumiPathPrefix = "/bangumi/play/"
-
-    var bilibiliSearch4kStreetViewURL: String {
-        return
-            "https://search.bilibili.com/all?keyword=牧神记&from_source=webtop_search&spm_id_from=333.788&search_source=3"
-    }
+  // Constants for Bilibili URLs
+  let bilibiliSearchURLBase = "https://search.bilibili.com/all?keyword="
+  let bilibiliVideoHost = "www.bilibili.com"  // Keep for checking if it's a video page
+  let bilibiliVideoPathPrefix = "/video/BV"  // Keep for checking if it's a video page
+  let bilibiliBangumiPathPrefix = "/bangumi/play/"
 
 }

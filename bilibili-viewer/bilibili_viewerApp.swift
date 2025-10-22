@@ -21,6 +21,7 @@ struct bilibili_viewerApp: App {
                 .environment(appModel)
         }
         .windowStyle(.plain)
+        .defaultSize(width: 1600, height: 1000)
 
         // Removed the separate WindowGroup for videoPlayerWindow as it's no longer needed
         // WindowGroup(id: "videoPlayerWindow") { ... }

@@ -17,9 +17,8 @@ struct ContentView: View {
   @State private var webView: WKWebView? = nil  // To control the WebView
 
   init() {
-    let urlString = AppModel().bilibiliSearch4kStreetViewURL
     _currentURL = State(
-      initialValue: URL(string: urlString) ?? URL(string: "https://www.bilibili.com")!)
+      initialValue: URL(string: "https://www.bilibili.com")!)
   }
 
   private func performSearch() {
@@ -46,6 +45,12 @@ struct ContentView: View {
         }
         .disabled(!(webView?.canGoBack ?? false))
 
+        Button {
+          currentURL = URL(string: "https://www.bilibili.com")!
+        } label: {
+          Label("Home", systemImage: "house")
+        }
+
         TextField("Search on Bilibili", text: $searchText)
           .textFieldStyle(.roundedBorder)
           .frame(maxWidth: 300)
@@ -59,6 +64,18 @@ struct ContentView: View {
           Label("Search", systemImage: "magnifyingglass")
         }
         .disabled(searchText.isEmpty)
+
+        Button {
+          currentURL = URL(string: "https://www.bilibili.com/history")!
+        } label: {
+          Label("", systemImage: "clock.arrow.circlepath")
+        }
+
+        Button {
+          triggerRefresh()
+        } label: {
+          Label("Refresh", systemImage: "arrow.clockwise")
+        }
 
         Spacer()  // Add spacer at the end to push content to center
       }
@@ -97,6 +114,47 @@ struct ContentView: View {
         Spacer()  // Add spacer at the beginning to push content to center
 
         Button {
+          if isBilibiliPlayablePage(url: currentURL) {
+            triggerSeekBackward()
+          }
+        } label: {
+          Label("", systemImage: "gobackward.15")
+        }
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
+
+        Button {
+          if isBilibiliVideoPage(url: currentURL) {
+            triggerPlayPause()
+          }
+        } label: {
+          Label("Play/Pause", systemImage: "playpause.fill")
+        }
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
+
+        Button {
+          if isBilibiliPlayablePage(url: currentURL) {
+            triggerSeekForward()
+          }
+        } label: {
+          Label("", systemImage: "goforward.15")
+        }
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
+
+        // 添加分隔符和间距
+        Divider()
+          .frame(height: 20)
+          .padding(.horizontal, 8)
+
+        Button {
+          if isBilibiliPlayablePage(url: currentURL) {
+            triggerDanmakuToggle()
+          }
+        } label: {
+          Label("", systemImage: "bubble.left.and.bubble.right")
+        }
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
+
+        Button {
           print("currentURL: \(currentURL)")
           // Execute JavaScript to click the fullscreen button
           if isBilibiliVideoPage(url: currentURL) {
@@ -108,22 +166,9 @@ struct ContentView: View {
             print("Not a Bilibili video page or unable to trigger fullscreen.")
           }
         } label: {
-          Label("Toggle Fullscreen", systemImage: "arrow.up.right.video.fill")
+          Label("Fullscreen", systemImage: "arrow.up.right.video.fill")
         }
-        .disabled(
-          !isBilibiliVideoPage(url: currentURL) && !isBilibiliBangumiPage(url: currentURL)
-        )
-
-        Button {
-          if isBilibiliVideoPage(url: currentURL) {
-            triggerPlayPause()
-          }
-        } label: {
-          Label("Play/Pause", systemImage: "playpause.fill")
-        }
-        .disabled(
-          !isBilibiliVideoPage(url: currentURL) && !isBilibiliBangumiPage(url: currentURL)
-        )
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
         Spacer()  // Add spacer at the end to push content to center
       }
@@ -160,6 +205,16 @@ struct ContentView: View {
     return false
   }
 
+  // Helper function to check if the current URL is a Bilibili video or bangumi page
+  private func isBilibiliPlayablePage(url: URL) -> Bool {
+    return isBilibiliVideoPage(url: url) || isBilibiliBangumiPage(url: url)
+  }
+
+  // Helper function to check if the current URL is NOT a Bilibili video or bangumi page
+  private func isNotBilibiliPlayablePage(url: URL) -> Bool {
+    return !isBilibiliPlayablePage(url: url)
+  }
+
   // Function to execute JavaScript for fullscreen
   private func triggerBilibiliFullscreen() -> Bool {
 
@@ -187,12 +242,29 @@ struct ContentView: View {
 
   private func triggerPlayPause() {
     print("Attempting to trigger play/pause.")
-    let script = "document.querySelector('.bpx-player-ctrl-play').click();"
+    let script = """
+        (function() {
+          var video = document.querySelector('video');
+          if (video) {
+            if (video.paused) {
+              video.play();
+              console.log('视频播放成功');
+              return 'played';
+            } else {
+              video.pause();
+              console.log('视频暂停成功');
+              return 'paused';
+            }
+          }
+          return false;
+        })();
+      """
+
     webView?.evaluateJavaScript(script) { result, error in
       if let error = error {
         print("JavaScript execution for play/pause failed: \(error)")
       } else {
-        print("JavaScript for play/pause executed. Result: \(String(describing: result))")
+        print("Play/pause executed. Result: \(String(describing: result))")
       }
     }
   }
@@ -225,7 +297,118 @@ struct ContentView: View {
     return success
   }
 
-  /// with class
+  private func triggerRefresh() {
+    print("Attempting to trigger refresh.")
+
+    // First try to find and click the "换一换" (refresh) button
+    let refreshButtonScript = """
+        var refreshBtn = document.querySelector('.feed-roll-btn .roll-btn');
+        if (refreshBtn) {
+          refreshBtn.click();
+          'refresh_button_clicked';
+        } else {
+          'refresh_button_not_found';
+        }
+      """
+
+    webView?.evaluateJavaScript(refreshButtonScript) { result, error in
+      if let error = error {
+        print("JavaScript execution for refresh button failed: \(error)")
+        // Fallback to page reload
+        DispatchQueue.main.async {
+          self.webView?.reload()
+        }
+      } else if let resultString = result as? String {
+        print("Refresh button script result: \(resultString)")
+        if resultString == "refresh_button_not_found" {
+          // Fallback to page reload
+          DispatchQueue.main.async {
+            self.webView?.reload()
+          }
+        }
+      }
+    }
+  }
+
+  private func triggerSeekBackward() {
+    print("Attempting to seek backward 15 seconds.")
+    let script = """
+        (function() {
+          var video = document.querySelector('video');
+          if (video) {
+            video.currentTime = video.currentTime - 15;
+            console.log('后退 15 秒成功');
+            return true;
+          }
+          return false;
+        })();
+      """
+
+    webView?.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("JavaScript execution for seek backward failed: \(error)")
+      } else {
+        print("Seek backward executed. Result: \(String(describing: result))")
+      }
+    }
+  }
+
+  private func triggerSeekForward() {
+    print("Attempting to seek forward 15 seconds.")
+    let script = """
+        (function() {
+          var video = document.querySelector('video');
+          if (video) {
+            video.currentTime = video.currentTime + 15;
+            console.log('前进 15 秒成功');
+            return true;
+          }
+          return false;
+        })();
+      """
+
+    webView?.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("JavaScript execution for seek forward failed: \(error)")
+      } else {
+        print("Seek forward executed. Result: \(String(describing: result))")
+      }
+    }
+  }
+
+  private func triggerDanmakuToggle() {
+    print("Attempting to toggle danmaku display.")
+    let script = """
+        (function() {
+          // 尝试找到弹幕开关元素
+          var danmakuSwitch = document.querySelector('.bpx-player-dm-switch input[type="checkbox"]');
+          if (danmakuSwitch) {
+            danmakuSwitch.click();
+            console.log('弹幕切换成功');
+            return true;
+          }
+
+          // 备用方案：尝试点击整个弹幕开关区域
+          var danmakuArea = document.querySelector('.bpx-player-dm-switch');
+          if (danmakuArea) {
+            danmakuArea.click();
+            console.log('弹幕切换成功（备用方案）');
+            return true;
+          }
+
+          console.log('未找到弹幕开关元素');
+          return false;
+        })();
+      """
+
+    webView?.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("JavaScript execution for danmaku toggle failed: \(error)")
+      } else {
+        print("Danmaku toggle executed. Result: \(String(describing: result))")
+      }
+    }
+  }
 }
 
 #Preview(windowStyle: .automatic) {

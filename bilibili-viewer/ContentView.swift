@@ -123,7 +123,7 @@ struct ContentView: View {
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
         Button {
-          if isBilibiliVideoPage(url: currentURL) {
+          if isBilibiliPlayablePage(url: currentURL) {
             triggerPlayPause()
           }
         } label: {

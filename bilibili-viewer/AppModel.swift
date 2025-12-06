@@ -26,4 +26,17 @@ class AppModel: ObservableObject {  // Explicitly conform to ObservableObject
   let bilibiliVideoPathPrefix = "/video/BV"  // Keep for checking if it's a video page
   let bilibiliBangumiPathPrefix = "/bangumi/play/"
 
+  // 窗口宽高比状态
+  var windowAspectRatio: CGFloat = 16.0 / 9.0
+
+  // 调整窗口比例
+  func adjustWindowAspectRatio(_ ratio: CGFloat) {
+    windowAspectRatio = ratio
+  }
+
+  // 根据视频尺寸调整窗口
+  func adjustWindowToVideoSize(videoWidth: CGFloat, videoHeight: CGFloat) {
+    let ratio = videoWidth / videoHeight
+    adjustWindowAspectRatio(ratio)
+  }
 }

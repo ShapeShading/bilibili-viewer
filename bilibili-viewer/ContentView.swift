@@ -15,6 +15,17 @@ struct ContentView: View {
   @State private var currentURL: URL
   @State private var searchText: String = ""
   @State private var webView: WKWebView? = nil  // To control the WebView
+  @State private var isPlaying: Bool = false  // 跟踪播放状态
+  @State private var videoAspectRatio: CGFloat = 16.0 / 9.0  // 视频宽高比，默认 16:9
+  @State private var detectedVideoSize: CGSize = .zero  // 检测到的视频尺寸
+
+  // 窗口尺寸预设
+  private let aspectRatioPresets: [(name: String, ratio: CGFloat)] = [
+    ("16:9", 16.0 / 9.0),
+    ("4:3", 4.0 / 3.0),
+    ("21:9", 21.0 / 9.0),
+    ("1:1", 1.0),
+  ]
 
   init() {
     _currentURL = State(
@@ -92,10 +103,16 @@ struct ContentView: View {
             print("Attempting to trigger fullscreen for video page: \(finishedURL)")
             let ret = triggerBilibiliFullscreen()
 
+            // 获取视频宽高比
+            detectVideoAspectRatio()
+
             if !ret {
               // another 2 seconds delay
               DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 let ret = triggerBilibiliFullscreen()
+
+                // 再次尝试获取视频宽高比
+                detectVideoAspectRatio()
 
                 if !ret {
                   print("Failed to trigger fullscreen again.")
@@ -107,18 +124,26 @@ struct ContentView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .onChange(of: webView?.canGoBack) { _, _ in
-        print("WebView canGoBack changed: \(webView?.canGoBack ?? false)")
+        print("WebView canGoBack changed: \\(webView?.canGoBack ?? false)")
       }
-
-      HStack {
-        Spacer()  // Add spacer at the beginning to push content to center
-
+    }
+    .aspectRatio(appModel.windowAspectRatio, contentMode: .fit)  // 保持宽高比，允许缩放
+    .frame(minWidth: 800, minHeight: 450)  // 最小尺寸
+    .onChange(of: currentURL) { _, newURL in
+      // This ensures that if the user navigates within the WebView,
+      // the 'Toggle Fullscreen' button's state is updated.
+      print("Current URL changed to: \\(newURL)")
+    }
+    .clipShape(RoundedRectangle(cornerRadius: 10))  // Add this line to round the corners of the VStack
+    .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .center) {
+      HStack(spacing: 16) {
         Button {
           if isBilibiliPlayablePage(url: currentURL) {
             triggerSeekBackward()
           }
         } label: {
-          Label("", systemImage: "gobackward.15")
+          Image(systemName: "gobackward.15")
+            .font(.title2)
         }
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
@@ -127,7 +152,8 @@ struct ContentView: View {
             triggerPlayPause()
           }
         } label: {
-          Label("Play/Pause", systemImage: "playpause.fill")
+          Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+            .font(.title)
         }
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
@@ -136,52 +162,169 @@ struct ContentView: View {
             triggerSeekForward()
           }
         } label: {
-          Label("", systemImage: "goforward.15")
+          Image(systemName: "goforward.15")
+            .font(.title2)
         }
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
-        // 添加分隔符和间距
         Divider()
-          .frame(height: 20)
-          .padding(.horizontal, 8)
+          .frame(height: 24)
 
         Button {
           if isBilibiliPlayablePage(url: currentURL) {
             triggerDanmakuToggle()
           }
         } label: {
-          Label("", systemImage: "bubble.left.and.bubble.right")
+          Image(systemName: "bubble.left.and.bubble.right")
+            .font(.title2)
         }
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
         Button {
-          print("currentURL: \(currentURL)")
-          // Execute JavaScript to click the fullscreen button
           if isBilibiliVideoPage(url: currentURL) {
             let _ = triggerBilibiliFullscreen()
           } else if isBilibiliBangumiPage(url: currentURL) {
             let _ = triggerBilibiliBangumiFullscreen()
-          } else {
-            // Optionally, provide feedback that it's not a video page
-            print("Not a Bilibili video page or unable to trigger fullscreen.")
           }
         } label: {
-          Label("Fullscreen", systemImage: "arrow.up.right.video.fill")
+          Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.title2)
         }
         .disabled(isNotBilibiliPlayablePage(url: currentURL))
 
-        Spacer()  // Add spacer at the end to push content to center
+        Divider()
+          .frame(height: 24)
+
+        // 视频宽高比信息和快捷调整
+        Menu {
+          Section("检测到的视频尺寸") {
+            if detectedVideoSize != .zero {
+              Text("\(Int(detectedVideoSize.width)) × \(Int(detectedVideoSize.height))")
+            } else {
+              Text("未检测到视频")
+            }
+          }
+
+          Section("窗口比例预设") {
+            ForEach(aspectRatioPresets, id: \.name) { preset in
+              Button {
+                // 调整窗口比例
+                appModel.adjustWindowAspectRatio(preset.ratio)
+                print(
+                  "Selected aspect ratio: \(preset.name), ratio: \(appModel.windowAspectRatio)"
+                )
+              } label: {
+                HStack {
+                  Text(preset.name)
+                  if abs(videoAspectRatio - preset.ratio) < 0.1 {
+                    Image(systemName: "checkmark")
+                  }
+                }
+              }
+            }
+
+            // 添加“匹配视频”选项
+            if detectedVideoSize != .zero {
+              Button {
+                appModel.adjustWindowToVideoSize(
+                  videoWidth: detectedVideoSize.width, videoHeight: detectedVideoSize.height)
+                print("匹配视频比例: \(detectedVideoSize.width) x \(detectedVideoSize.height)")
+              } label: {
+                HStack {
+                  Text("匹配视频 (\(getAspectRatioName()))")
+                  Image(systemName: "wand.and.stars")
+                }
+              }
+            }
+          }
+
+          Section {
+            Button {
+              detectVideoAspectRatio()
+            } label: {
+              Label("重新检测", systemImage: "arrow.clockwise")
+            }
+          }
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: "rectangle.ratio.16.to.9")
+              .font(.title2)
+            if detectedVideoSize != .zero {
+              Text(getAspectRatioName())
+                .font(.caption)
+            }
+          }
+        }
+        .disabled(isNotBilibiliPlayablePage(url: currentURL))
       }
-      .padding()
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-      .background(Color.black.opacity(0.3))
+      .padding(.horizontal, 20)
+      .padding(.vertical, 12)
+      .glassBackgroundEffect()
+      .padding(.top, 60)  // 与视频内容保持距离，避免遮挡
     }
-    .onChange(of: currentURL) { _, newURL in
-      // This ensures that if the user navigates within the WebView,
-      // the 'Toggle Fullscreen' button's state is updated.
-      print("Current URL changed to: \(newURL)")
+  }
+
+  // 获取最接近的宽高比名称
+  private func getAspectRatioName() -> String {
+    for preset in aspectRatioPresets {
+      if abs(videoAspectRatio - preset.ratio) < 0.1 {
+        return preset.name
+      }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 10))  // Add this line to round the corners of the VStack
+    // 如果没有匹配的预设，显示实际比例
+    let gcd = gcdFunc(Int(detectedVideoSize.width), Int(detectedVideoSize.height))
+    if gcd > 0 {
+      return "\(Int(detectedVideoSize.width) / gcd):\(Int(detectedVideoSize.height) / gcd)"
+    }
+    return String(format: "%.2f", videoAspectRatio)
+  }
+
+  // 计算最大公约数
+  private func gcdFunc(_ a: Int, _ b: Int) -> Int {
+    if b == 0 { return a }
+    return gcdFunc(b, a % b)
+  }
+
+  // 检测视频宽高比
+  private func detectVideoAspectRatio() {
+    let script = """
+        (function() {
+          var video = document.querySelector('video');
+          if (video) {
+            return {
+              videoWidth: video.videoWidth,
+              videoHeight: video.videoHeight,
+              displayWidth: video.clientWidth,
+              displayHeight: video.clientHeight
+            };
+          }
+          return null;
+        })();
+      """
+
+    webView?.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("获取视频尺寸失败: \(error)")
+        return
+      }
+
+      if let dict = result as? [String: Any],
+        let videoWidth = dict["videoWidth"] as? CGFloat,
+        let videoHeight = dict["videoHeight"] as? CGFloat,
+        videoWidth > 0 && videoHeight > 0
+      {
+        DispatchQueue.main.async {
+          self.detectedVideoSize = CGSize(width: videoWidth, height: videoHeight)
+          self.videoAspectRatio = videoWidth / videoHeight
+          print("检测到视频尺寸: \(Int(videoWidth)) × \(Int(videoHeight)), 宽高比: \(self.videoAspectRatio)")
+
+          // 自动调整窗口大小以匹配视频宽高比
+          self.appModel.adjustWindowToVideoSize(videoWidth: videoWidth, videoHeight: videoHeight)
+        }
+      } else {
+        print("未找到视频元素或视频尺寸无效")
+      }
+    }
   }
 
   // Helper function to check if the current URL is a Bilibili video page
@@ -265,6 +408,12 @@ struct ContentView: View {
         print("JavaScript execution for play/pause failed: \(error)")
       } else {
         print("Play/pause executed. Result: \(String(describing: result))")
+        // 更新播放状态
+        if let resultString = result as? String {
+          DispatchQueue.main.async {
+            self.isPlaying = (resultString == "played")
+          }
+        }
       }
     }
   }

@@ -33,8 +33,20 @@ class BilibiliAPIClient {
   var videos: [VideoItem] = []
   var isLoading = false
   var errorMessage: String? = nil
+  var searchDraft = ""
+  var searchPage = 1
   private var cachedRecommendations: [VideoItem] = []
+  private var cachedRecommendationErrorMessage: String? = nil
+  private var hasLoadedRecommendations = false
   private var cachedUpNextVideos: [String: [VideoItem]] = [:]
+  private var cachedUpNextErrorMessages: [String: String] = [:]
+  private var loadedUpNextSources: Set<String> = []
+  private var currentUpNextSourceID: String? = nil
+  private var cachedSearchVideos: [VideoItem] = []
+  private var cachedSearchErrorMessage: String? = nil
+  private var cachedSearchKeyword = ""
+  private var cachedSearchPage = 1
+  private var hasLoadedSearch = false
   weak var webView: WKWebView?
 
   private struct RecommendationParseResult {
@@ -207,6 +219,22 @@ class BilibiliAPIClient {
     return VideoItem(id: bvid, title: title, cover: normalizedCoverURL(pic), ownerName: owner)
   }
 
+  private func applyDisplayedState(videos: [VideoItem], errorMessage: String?) {
+    self.videos = videos
+    self.errorMessage = errorMessage
+  }
+
+  func restoreSearchStateIfAvailable() -> Bool {
+    guard hasLoadedSearch else { return false }
+    searchDraft = cachedSearchKeyword
+    searchPage = max(cachedSearchPage, 1)
+    applyDisplayedState(videos: cachedSearchVideos, errorMessage: cachedSearchErrorMessage)
+    print(
+      "API 搜索恢复缓存: keyword=\(cachedSearchKeyword), page=\(searchPage), videos=\(cachedSearchVideos.count), error=\(cachedSearchErrorMessage ?? "nil")"
+    )
+    return true
+  }
+
   func attachWebView(_ webView: WKWebView?) {
     self.webView = webView
   }
@@ -271,20 +299,22 @@ class BilibiliAPIClient {
   }
 
   func loadRecommendationsIfNeeded() async {
-    if !cachedRecommendations.isEmpty {
-      videos = cachedRecommendations
-      errorMessage = nil
-      print("API 推荐命中缓存: videos=\(videos.count)")
+    if hasLoadedRecommendations {
+      applyDisplayedState(videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
+      print(
+        "API 推荐命中缓存: videos=\(cachedRecommendations.count), error=\(cachedRecommendationErrorMessage ?? "nil")"
+      )
       return
     }
     await fetchRecommendations(force: false)
   }
 
   func fetchRecommendations(force: Bool = true) async {
-    if !force && !cachedRecommendations.isEmpty {
-      videos = cachedRecommendations
-      errorMessage = nil
-      print("API 推荐跳过请求，直接复用缓存: videos=\(videos.count)")
+    if !force && hasLoadedRecommendations {
+      applyDisplayedState(videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
+      print(
+        "API 推荐跳过请求，直接复用缓存: videos=\(cachedRecommendations.count), error=\(cachedRecommendationErrorMessage ?? "nil")"
+      )
       return
     }
 
@@ -326,8 +356,9 @@ class BilibiliAPIClient {
 
         let mappedVideos = items.compactMap(makeRecommendationVideoItem(from:))
         cachedRecommendations = mappedVideos
-        videos = mappedVideos
-        errorMessage = nil
+        cachedRecommendationErrorMessage = nil
+        hasLoadedRecommendations = true
+        applyDisplayedState(videos: mappedVideos, errorMessage: nil)
         print("API 推荐加载成功: ps=\(ps), videos=\(videos.count)")
         return
       } catch {
@@ -337,23 +368,32 @@ class BilibiliAPIClient {
       }
     }
 
-    videos = []
-    errorMessage = "推荐加载失败"
+    cachedRecommendations = []
+    cachedRecommendationErrorMessage = "推荐加载失败"
+    hasLoadedRecommendations = true
+    applyDisplayedState(videos: [], errorMessage: cachedRecommendationErrorMessage)
     print("API 推荐全部尝试失败: \(failureSummaries.joined(separator: " | "))")
   }
 
   func loadUpNextIfNeeded(for currentURL: URL) async {
     guard let bvid = bvid(from: currentURL) else {
-      videos = []
-      errorMessage = "当前页面暂无接下来播放"
+      currentUpNextSourceID = nil
+      applyDisplayedState(videos: [], errorMessage: "当前页面暂无接下来播放")
       print("API 接下来播放跳过: url=\(currentURL.absoluteString), reason=missing-bvid")
       return
     }
 
-    if let cachedVideos = cachedUpNextVideos[bvid], !cachedVideos.isEmpty {
-      videos = cachedVideos
-      errorMessage = nil
-      print("API 接下来播放命中缓存: bvid=\(bvid), videos=\(videos.count)")
+    let previousSourceID = currentUpNextSourceID
+    currentUpNextSourceID = bvid
+
+    if loadedUpNextSources.contains(bvid) {
+      applyDisplayedState(
+        videos: cachedUpNextVideos[bvid] ?? [],
+        errorMessage: cachedUpNextErrorMessages[bvid]
+      )
+      print(
+        "API 接下来播放命中缓存: bvid=\(bvid), previous=\(previousSourceID ?? "nil"), videos=\((cachedUpNextVideos[bvid] ?? []).count), error=\(cachedUpNextErrorMessages[bvid] ?? "nil")"
+      )
       return
     }
 
@@ -362,16 +402,22 @@ class BilibiliAPIClient {
 
   func fetchUpNext(for currentURL: URL, force: Bool = true) async {
     guard let bvid = bvid(from: currentURL), let url = upNextURL(bvid: bvid) else {
-      videos = []
-      errorMessage = "当前页面暂无接下来播放"
+      currentUpNextSourceID = nil
+      applyDisplayedState(videos: [], errorMessage: "当前页面暂无接下来播放")
       print("API 接下来播放跳过: url=\(currentURL.absoluteString), reason=missing-bvid")
       return
     }
 
-    if !force, let cachedVideos = cachedUpNextVideos[bvid], !cachedVideos.isEmpty {
-      videos = cachedVideos
-      errorMessage = nil
-      print("API 接下来播放跳过请求，直接复用缓存: bvid=\(bvid), videos=\(videos.count)")
+    currentUpNextSourceID = bvid
+
+    if !force, loadedUpNextSources.contains(bvid) {
+      applyDisplayedState(
+        videos: cachedUpNextVideos[bvid] ?? [],
+        errorMessage: cachedUpNextErrorMessages[bvid]
+      )
+      print(
+        "API 接下来播放跳过请求，直接复用缓存: bvid=\(bvid), videos=\((cachedUpNextVideos[bvid] ?? []).count), error=\(cachedUpNextErrorMessages[bvid] ?? "nil")"
+      )
       return
     }
 
@@ -398,8 +444,10 @@ class BilibiliAPIClient {
       )
 
       guard let items = parsed.items, !items.isEmpty else {
-        videos = []
-        errorMessage = "接下来播放加载失败"
+        cachedUpNextVideos[bvid] = []
+        cachedUpNextErrorMessages[bvid] = "接下来播放加载失败"
+        loadedUpNextSources.insert(bvid)
+        applyDisplayedState(videos: [], errorMessage: cachedUpNextErrorMessages[bvid])
         print(
           "API 接下来播放结果为空: bvid=\(bvid), http=\(httpResponse?.statusCode ?? -1), code=\(parsed.code?.description ?? "nil"), message=\(parsed.message ?? "nil")"
         )
@@ -408,12 +456,15 @@ class BilibiliAPIClient {
 
       let mappedVideos = items.compactMap(makeUpNextVideoItem(from:))
       cachedUpNextVideos[bvid] = mappedVideos
-      videos = mappedVideos
-      errorMessage = nil
+      cachedUpNextErrorMessages[bvid] = nil
+      loadedUpNextSources.insert(bvid)
+      applyDisplayedState(videos: mappedVideos, errorMessage: nil)
       print("API 接下来播放加载成功: bvid=\(bvid), videos=\(videos.count)")
     } catch {
-      videos = []
-      errorMessage = "接下来播放加载失败"
+      cachedUpNextVideos[bvid] = []
+      cachedUpNextErrorMessages[bvid] = "接下来播放加载失败"
+      loadedUpNextSources.insert(bvid)
+      applyDisplayedState(videos: [], errorMessage: cachedUpNextErrorMessages[bvid])
       print(
         "API 接下来播放请求失败: bvid=\(bvid), url=\(url.absoluteString), networkError=\(errorSummary(error))"
       )
@@ -421,12 +472,15 @@ class BilibiliAPIClient {
   }
 
   func searchVideos(keyword: String, page: Int = 1, pageSize: Int = 10) async {
-    guard !keyword.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
+    guard !trimmedKeyword.isEmpty else { return }
+    searchDraft = keyword
+    searchPage = max(page, 1)
     isLoading = true
     errorMessage = nil
     defer { isLoading = false }
 
-    let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+    let encoded = trimmedKeyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmedKeyword
     let attempts = [(label: "page=\(page)", page: page)]
     var failureSummaries: [String] = []
 
@@ -435,7 +489,7 @@ class BilibiliAPIClient {
       else { continue }
       let hasWebView = webView != nil
       print(
-        "API 搜索环境: keyword=\(keyword), page=\(page), pageSize=\(pageSize), variant=\(attempt.label), hasWebView=\(hasWebView)"
+        "API 搜索环境: keyword=\(trimmedKeyword), page=\(page), pageSize=\(pageSize), variant=\(attempt.label), hasWebView=\(hasWebView)"
       )
 
       if hasWebView {
@@ -447,14 +501,19 @@ class BilibiliAPIClient {
           let finalURL = result.finalURL ?? url.absoluteString
 
           print(
-            "API 搜索响应(webView): keyword=\(keyword), variant=\(attempt.label), requestURL=\(url.absoluteString), finalURL=\(finalURL), http=\(result.status), contentType=\(result.contentType ?? "nil"), bytes=\(data.count), code=\(parsed.code?.description ?? "nil"), message=\(parsed.message ?? "nil"), preview=\(preview)"
+            "API 搜索响应(webView): keyword=\(trimmedKeyword), variant=\(attempt.label), requestURL=\(url.absoluteString), finalURL=\(finalURL), http=\(result.status), contentType=\(result.contentType ?? "nil"), bytes=\(data.count), code=\(parsed.code?.description ?? "nil"), message=\(parsed.message ?? "nil"), preview=\(preview)"
           )
 
           if let searchResults = parsed.results {
-            videos = searchResults.compactMap(makeSearchVideoItem(from:))
-            errorMessage = nil
+            let mappedVideos = searchResults.compactMap(makeSearchVideoItem(from:))
+            cachedSearchKeyword = trimmedKeyword
+            cachedSearchPage = max(page, 1)
+            cachedSearchVideos = mappedVideos
+            cachedSearchErrorMessage = nil
+            hasLoadedSearch = true
+            applyDisplayedState(videos: mappedVideos, errorMessage: nil)
             print(
-              "API 搜索加载成功(webView): keyword=\(keyword), page=\(page), variant=\(attempt.label), videos=\(videos.count)"
+              "API 搜索加载成功(webView): keyword=\(trimmedKeyword), page=\(page), variant=\(attempt.label), videos=\(videos.count)"
             )
             return
           }
@@ -466,14 +525,14 @@ class BilibiliAPIClient {
           let summary =
             "variant=\(attempt.label) transport=webView url=\(url.absoluteString) networkError=\(errorSummary(error))"
           failureSummaries.append(summary)
-          print("API 搜索请求失败(webView): keyword=\(keyword), \(summary)")
+          print("API 搜索请求失败(webView): keyword=\(trimmedKeyword), \(summary)")
         }
       }
 
       let request = await makeRequest(url: url)
       let cookieBytes = request.value(forHTTPHeaderField: "Cookie")?.count ?? 0
       print(
-        "API 搜索请求: keyword=\(keyword), encoded=\(encoded), variant=\(attempt.label), url=\(url.absoluteString), cookieBytes=\(cookieBytes), referer=\(request.value(forHTTPHeaderField: "Referer") ?? "nil")"
+        "API 搜索请求: keyword=\(trimmedKeyword), encoded=\(encoded), variant=\(attempt.label), url=\(url.absoluteString), cookieBytes=\(cookieBytes), referer=\(request.value(forHTTPHeaderField: "Referer") ?? "nil")"
       )
 
       do {
@@ -485,7 +544,7 @@ class BilibiliAPIClient {
         let preview = responsePreview(data)
 
         print(
-          "API 搜索响应: keyword=\(keyword), variant=\(attempt.label), requestURL=\(url.absoluteString), finalURL=\(finalURL), http=\(httpResponse?.statusCode ?? -1), contentType=\(contentType), bytes=\(data.count), code=\(parsed.code?.description ?? "nil"), message=\(parsed.message ?? "nil"), preview=\(preview)"
+          "API 搜索响应: keyword=\(trimmedKeyword), variant=\(attempt.label), requestURL=\(url.absoluteString), finalURL=\(finalURL), http=\(httpResponse?.statusCode ?? -1), contentType=\(contentType), bytes=\(data.count), code=\(parsed.code?.description ?? "nil"), message=\(parsed.message ?? "nil"), preview=\(preview)"
         )
 
         guard let result = parsed.results else {
@@ -495,23 +554,32 @@ class BilibiliAPIClient {
           continue
         }
 
-        videos = result.compactMap(makeSearchVideoItem(from:))
-        errorMessage = nil
+        let mappedVideos = result.compactMap(makeSearchVideoItem(from:))
+        cachedSearchKeyword = trimmedKeyword
+        cachedSearchPage = max(page, 1)
+        cachedSearchVideos = mappedVideos
+        cachedSearchErrorMessage = nil
+        hasLoadedSearch = true
+        applyDisplayedState(videos: mappedVideos, errorMessage: nil)
         print(
-          "API 搜索加载成功: keyword=\(keyword), page=\(page), variant=\(attempt.label), videos=\(videos.count)"
+          "API 搜索加载成功: keyword=\(trimmedKeyword), page=\(page), variant=\(attempt.label), videos=\(videos.count)"
         )
         return
       } catch {
         let summary =
           "variant=\(attempt.label) url=\(url.absoluteString) networkError=\(errorSummary(error))"
         failureSummaries.append(summary)
-        print("API 搜索请求失败: keyword=\(keyword), \(summary)")
+        print("API 搜索请求失败: keyword=\(trimmedKeyword), \(summary)")
       }
     }
 
-    videos = []
-    errorMessage = "搜索加载失败"
-    print("API 搜索全部尝试失败: keyword=\(keyword), \(failureSummaries.joined(separator: " | "))")
+    cachedSearchKeyword = trimmedKeyword
+    cachedSearchPage = max(page, 1)
+    cachedSearchVideos = []
+    cachedSearchErrorMessage = "搜索加载失败"
+    hasLoadedSearch = true
+    applyDisplayedState(videos: [], errorMessage: cachedSearchErrorMessage)
+    print("API 搜索全部尝试失败: keyword=\(trimmedKeyword), \(failureSummaries.joined(separator: " | "))")
   }
 }
 
@@ -522,8 +590,6 @@ struct BilibiliPanelView: View {
   @Binding var isVisible: Bool
   var client: BilibiliAPIClient
   @AppStorage("bilibili.panel.mode") private var modeRawValue = SidebarMode.recommend.rawValue
-  @State private var searchText = ""
-  @State private var searchPage = 1
 
   private let coverAspectRatio: CGFloat = 16.0 / 9.0
   private let visibleColumnCount: CGFloat = 5
@@ -567,17 +633,15 @@ struct BilibiliPanelView: View {
   }
 
   private func runSearch(page: Int) {
-    let trimmedSearchText = searchText.trimmingCharacters(in: .whitespaces)
+    let trimmedSearchText = client.searchDraft.trimmingCharacters(in: .whitespaces)
     guard !trimmedSearchText.isEmpty else {
-      searchPage = 1
-      client.videos = []
-      client.errorMessage = nil
+      client.searchPage = 1
       return
     }
 
-    searchPage = max(page, 1)
+    client.searchPage = max(page, 1)
     Task {
-      await client.searchVideos(keyword: trimmedSearchText, page: searchPage, pageSize: 10)
+      await client.searchVideos(keyword: trimmedSearchText, page: client.searchPage, pageSize: 10)
     }
   }
 
@@ -600,11 +664,14 @@ struct BilibiliPanelView: View {
         }
       }
     case .search:
-      if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+      if !force, client.restoreSearchStateIfAvailable() {
+        return
+      }
+      if client.searchDraft.trimmingCharacters(in: .whitespaces).isEmpty {
         client.videos = []
         client.errorMessage = nil
       } else {
-        runSearch(page: searchPage)
+        runSearch(page: client.searchPage)
       }
     }
   }
@@ -631,7 +698,13 @@ struct BilibiliPanelView: View {
           }
         } else if mode == .search {
           HStack(spacing: 8) {
-            TextField("Search videos...", text: $searchText)
+            TextField(
+              "Search videos...",
+              text: Binding(
+                get: { client.searchDraft },
+                set: { client.searchDraft = $0 }
+              )
+            )
               .textFieldStyle(.roundedBorder)
               .frame(maxWidth: 260)
               .onSubmit { runSearch(page: 1) }
@@ -640,16 +713,16 @@ struct BilibiliPanelView: View {
             } label: {
               Label("Search", systemImage: "magnifyingglass")
             }
-            .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(client.searchDraft.trimmingCharacters(in: .whitespaces).isEmpty)
 
             Button {
-              runSearch(page: searchPage + 1)
+              runSearch(page: client.searchPage + 1)
             } label: {
               Label("Next Page", systemImage: "arrow.right.circle")
             }
-            .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(client.searchDraft.trimmingCharacters(in: .whitespaces).isEmpty)
 
-            Text("Page \(searchPage)")
+            Text("Page \(client.searchPage)")
               .font(.caption)
               .foregroundStyle(.secondary)
           }
@@ -695,7 +768,7 @@ struct BilibiliPanelView: View {
                 } else if mode == .upNext {
                   await client.fetchUpNext(for: currentURL)
                 } else {
-                  await client.searchVideos(keyword: searchText, page: searchPage, pageSize: 10)
+                  await client.searchVideos(keyword: client.searchDraft, page: client.searchPage, pageSize: 10)
                 }
               }
             }
@@ -749,10 +822,6 @@ struct BilibiliPanelView: View {
       loadCurrentMode()
     }
     .onChange(of: modeRawValue) { _, newValue in
-      let selectedMode = SidebarMode(rawValue: newValue) ?? .recommend
-      if selectedMode == .search {
-        searchPage = max(searchPage, 1)
-      }
       loadCurrentMode()
     }
     .onChange(of: currentURL) { _, newURL in

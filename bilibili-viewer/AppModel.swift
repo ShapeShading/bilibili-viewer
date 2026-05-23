@@ -37,6 +37,8 @@ class AppModel: ObservableObject {  // Explicitly conform to ObservableObject
   // 根据视频尺寸调整窗口
   func adjustWindowToVideoSize(videoWidth: CGFloat, videoHeight: CGFloat) {
     let ratio = videoWidth / videoHeight
-    adjustWindowAspectRatio(ratio)
+    // 竖屏视频最小保证 8:5，避免工具栏被压缩
+    let clampedRatio = max(ratio, 8.0 / 5.0)
+    adjustWindowAspectRatio(clampedRatio)
   }
 }

@@ -6,6 +6,35 @@ struct WebView: UIViewRepresentable {
   @Binding var currentWebViewInstance: WKWebView?
   var onPageFinishLoad: ((URL) -> Void)?  // Callback for when page finishes loading
 
+  private func normalizedURL(_ input: URL?) -> URL? {
+    guard let input else { return nil }
+    guard var components = URLComponents(url: input, resolvingAgainstBaseURL: false) else {
+      return input
+    }
+
+    let ignoredQueryItems: Set<String> = [
+      "vd_source",
+      "spm_id_from",
+      "from_source",
+      "search_source",
+    ]
+
+    if let queryItems = components.queryItems, !queryItems.isEmpty {
+      let filteredItems = queryItems.filter { !ignoredQueryItems.contains($0.name) }
+      components.queryItems = filteredItems.isEmpty ? nil : filteredItems
+    }
+
+    if components.path.hasSuffix("/") && components.path.count > 1 {
+      components.path.removeLast()
+    }
+
+    return components.url ?? input
+  }
+
+  private func normalizedURLString(_ input: URL?) -> String {
+    normalizedURL(input)?.absoluteString ?? ""
+  }
+
   func makeUIView(context: Context) -> WKWebView {
     print("WebView: makeUIView called. Creating new WKWebView for URL: \(url.absoluteString)")  // DEBUG
     let config = WKWebViewConfiguration()
@@ -59,21 +88,14 @@ struct WebView: UIViewRepresentable {
       "WebView: updateUIView called. Target URL: \(url.absoluteString). Current uiView.url: \(uiView.url?.absoluteString ?? "nil")"
     )  // DEBUG
     context.coordinator.onPageFinishLoad = onPageFinishLoad  // Ensure coordinator has the latest callback
-    // Only load if the URL is different from the current one to avoid reload loops
-    // and ensure that programmatic URL changes from ContentView are reflected.
-    var currentURL = uiView.url?.absoluteString ?? ""
-    currentURL = currentURL.replacingOccurrences(of: "%3A", with: ":")
-    do {
-      // dirty trick to avoid reload loop
-      let regex = try NSRegularExpression(pattern: "&vd_source=[^&]*", options: [])
-      currentURL = regex.stringByReplacingMatches(
-        in: currentURL, options: [], range: NSRange(location: 0, length: currentURL.utf16.count),
-        withTemplate: ""
-      )
-    } catch {
-      print("Error creating regex: \(error)")
-    }
-    if currentURL != url.absoluteString {
+    // 规范化 bilibili 跟踪参数后再比较，避免打开推荐面板等普通状态更新时误触发 reload。
+    let normalizedCurrentURL = normalizedURLString(uiView.url)
+    let normalizedTargetURL = normalizedURLString(url)
+    print(
+      "WebView: normalized compare. target=\(normalizedTargetURL), current=\(normalizedCurrentURL)"
+    )
+
+    if normalizedCurrentURL != normalizedTargetURL {
       print(
         "WebView: Reloading - target URL (\(url.absoluteString)) is different from uiView.url (\(uiView.url?.absoluteString ?? "nil"))."
       )  // DEBUG
@@ -101,9 +123,10 @@ struct WebView: UIViewRepresentable {
       // If navigation finishes and the URL is different, update the binding.
       // This allows ContentView to know the current URL even if the user navigates within the WebView.
       if let newURL = webView.url {
-        if newURL.absoluteString != parent.url.absoluteString {
+        let normalizedNewURL = parent.normalizedURL(newURL) ?? newURL
+        if normalizedNewURL.absoluteString != parent.normalizedURL(parent.url)?.absoluteString {
           DispatchQueue.main.async {
-            self.parent.url = newURL
+            self.parent.url = normalizedNewURL
           }
         }
 
@@ -111,8 +134,37 @@ struct WebView: UIViewRepresentable {
         injectVisionOSOptimizedCSS(webView: webView)
 
         // Call the onPageFinishLoad callback
-        onPageFinishLoad?(newURL)
+        print("WebView: didFinish navigation. URL=\(newURL.absoluteString)")
+        onPageFinishLoad?(normalizedNewURL)
       }
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+      print("WebView: didStartProvisionalNavigation. URL=\(webView.url?.absoluteString ?? "nil")")
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+      print("WebView: didCommit navigation. URL=\(webView.url?.absoluteString ?? "nil")")
+    }
+
+    func webView(
+      _ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+      if let httpResp = navigationResponse.response as? HTTPURLResponse {
+        print("WebView: HTTP \(httpResp.statusCode) <- \(httpResp.url?.absoluteString ?? "nil")")
+      }
+      decisionHandler(.allow)
+    }
+
+    func webView(
+      _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+      print(
+        "WebView: decidePolicyFor \(navigationAction.navigationType.rawValue) -> \(navigationAction.request.url?.absoluteString ?? "nil")"
+      )
+      decisionHandler(.allow)
     }
 
     private func injectVisionOSOptimizedCSS(webView: WKWebView) {
@@ -126,11 +178,22 @@ struct WebView: UIViewRepresentable {
           /* 优化滚动条 */
           ::-webkit-scrollbar {
             width: 16px !important;
+            height: 10px !important;
+          }
+
+          /* 轨道：深色背景，比 SwiftUI 玻璃面板更深 */
+          ::-webkit-scrollbar-track {
+            background-color: rgba(10, 10, 15, 0.85) !important;
+            border-radius: 8px !important;
           }
 
           ::-webkit-scrollbar-thumb {
-            background-color: rgba(0,0,0,0.3) !important;
+            background-color: rgba(80, 140, 255, 0.75) !important;
             border-radius: 8px !important;
+          }
+
+          ::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(100, 160, 255, 0.95) !important;
           }
 
           /* B站视频播放器进度条优化 */
@@ -178,14 +241,15 @@ struct WebView: UIViewRepresentable {
           }
         """
 
+      // 末尾加 ; null 避免 evaluateJavaScript 返回不可序列化的 DOM element
       let jsCode =
-        "var style = document.createElement('style'); style.innerHTML = `\(cssCode)`; document.head.appendChild(style);"
+        "var style = document.createElement('style'); style.innerHTML = `\(cssCode)`; document.head.appendChild(style); null;"
 
-      webView.evaluateJavaScript(jsCode) { result, error in
+      webView.evaluateJavaScript(jsCode) { _, error in
         if let error = error {
-          print("CSS注入失败: \(error.localizedDescription)")
+          print("WebView: CSS注入失败: \(error.localizedDescription)")
         } else {
-          print("VisionOS触控优化CSS注入成功")
+          print("WebView: CSS注入成功")
         }
       }
     }

@@ -23,7 +23,7 @@ struct bilibili_viewerApp: App {
     }
     .windowStyle(.plain)
     .windowResizability(.contentSize)  // 允许窗口根据内容调整大小
-    .defaultSize(width: 1600, height: 900)  // 默认 16:9 比例
+    .defaultSize(width: 1800, height: 1000)
 
     // Removed the separate WindowGroup for videoPlayerWindow as it's no longer needed
     // WindowGroup(id: "videoPlayerWindow") { ... }

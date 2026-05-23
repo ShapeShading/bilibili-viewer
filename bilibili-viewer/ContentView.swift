@@ -14,11 +14,17 @@ struct ContentView: View {
   @Environment(AppModel.self) var appModel
   @State private var currentURL: URL
   @State private var searchText: String = ""
+  @State private var showSearchPrompt = false
   @State private var webView: WKWebView? = nil  // To control the WebView
   @State private var isPlaying: Bool = false  // 跟踪播放状态
+  @State private var isDanmakuEnabled: Bool = false
+  @State private var isLiked: Bool = false
+  @State private var isFullscreen: Bool = false
   @State private var videoAspectRatio: CGFloat = 16.0 / 9.0  // 视频宽高比，默认 16:9
   @State private var detectedVideoSize: CGSize = .zero  // 检测到的视频尺寸
   @State private var currentPlaybackRate: Double = 1.0  // 当前播放倍速
+  @State private var showBrowsePanel = false  // 是否显示视频浏览浮层
+  @State private var browseClient = BilibiliAPIClient()
 
   // 倍速预设
   private let playbackRates: [Double] = [1.0, 1.25, 1.5, 2.0]
@@ -37,7 +43,10 @@ struct ContentView: View {
   }
 
   private func performSearch() {
-    if let encodedSearchText = searchText.addingPercentEncoding(
+    let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSearchText.isEmpty else { return }
+
+    if let encodedSearchText = trimmedSearchText.addingPercentEncoding(
       withAllowedCharacters: .urlQueryAllowed),
       let searchURL = URL(
         string:
@@ -57,17 +66,51 @@ struct ContentView: View {
           print("Triggering smart fullscreen for: \(finishedURL)")
           triggerBilibiliFullscreenSmart()
         }
+        scheduleVideoControlStateSync(after: 0.6)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .onChange(of: webView?.canGoBack) { _, _ in
-        print("WebView canGoBack changed: \\(webView?.canGoBack ?? false)")
+        print("WebView canGoBack changed: \(webView?.canGoBack ?? false)")
       }
     }
-    .frame(minWidth: 800, minHeight: 450)  // 最小尺寸
+    .onChange(of: webView) { _, newWebView in
+      browseClient.attachWebView(newWebView)
+      print("BilibiliAPIClient webView attached: \(newWebView != nil)")
+    }
+    .onAppear {
+      browseClient.attachWebView(webView)
+    }
+    .overlay(alignment: .bottom) {
+      if showBrowsePanel {
+        BilibiliPanelView(
+          currentURL: $currentURL,
+          isVisible: $showBrowsePanel,
+          client: browseClient
+        )
+        .containerRelativeFrame(.vertical, count: 2, span: 1, spacing: 0)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
+    }
+    .animation(.easeInOut(duration: 0.25), value: showBrowsePanel)
+    .frame(
+      minWidth: 800,
+      idealWidth: max(appModel.windowAspectRatio * 980, 880),
+      maxWidth: .infinity,
+      minHeight: 450,
+      idealHeight: 980,
+      maxHeight: .infinity
+    )
     .onChange(of: currentURL) { _, newURL in
-      // This ensures that if the user navigates within the WebView,
-      // the 'Toggle Fullscreen' button's state is updated.
-      print("Current URL changed to: \\(newURL)")
+      print("Current URL changed to: \(newURL.absoluteString)")
+      if isBilibiliPlayablePage(url: newURL) {
+        scheduleVideoControlStateSync(after: 0.5)
+      } else {
+        resetVideoControlStates()
+      }
+    }
+    .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
+      guard isBilibiliPlayablePage(url: currentURL) else { return }
+      syncVideoControlStates()
     }
     .clipShape(RoundedRectangle(cornerRadius: 10))  // Add this line to round the corners of the VStack
     .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .center) {
@@ -77,12 +120,31 @@ struct ContentView: View {
         navigationOrnament
       }
     }
+    .alert("Search Bilibili", isPresented: $showSearchPrompt) {
+      TextField("Keyword", text: $searchText)
+      Button("Cancel", role: .cancel) {}
+      Button("Search") {
+        performSearch()
+      }
+    } message: {
+      Text("Enter a keyword to open Bilibili search.")
+    }
   }
 
   // 视频模式工具栏：Home + 视频控制按钮
   @ViewBuilder
   private var videoControlsOrnament: some View {
     HStack(spacing: 16) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.25)) { showBrowsePanel.toggle() }
+      } label: {
+        Image(systemName: showBrowsePanel ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2")
+          .font(.title2)
+      }
+
+      Divider()
+        .frame(height: 24)
+
       Button {
         currentURL = URL(string: "https://www.bilibili.com")!
       } label: {
@@ -94,40 +156,11 @@ struct ContentView: View {
         .frame(height: 24)
 
       Button {
-        triggerSeekBackward()
-      } label: {
-        Image(systemName: "gobackward.15").font(.title2)
-      }
-
-      Button {
         triggerPlayPause()
       } label: {
-        Image(systemName: isPlaying ? "pause.fill" : "play.fill").font(.title)
-      }
-
-      Button {
-        triggerSeekForward()
-      } label: {
-        Image(systemName: "goforward.15").font(.title2)
-      }
-
-      Divider()
-        .frame(height: 24)
-
-      Button {
-        triggerDanmakuToggle()
-      } label: {
-        Image(systemName: "bubble.left.and.bubble.right").font(.title2)
-      }
-
-      Button {
-        if isBilibiliVideoPage(url: currentURL) {
-          let _ = triggerBilibiliFullscreen()
-        } else if isBilibiliBangumiPage(url: currentURL) {
-          let _ = triggerBilibiliBangumiFullscreen()
-        }
-      } label: {
-        Image(systemName: "arrow.up.left.and.arrow.down.right").font(.title2)
+        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+          .font(.title)
+          .foregroundStyle(isPlaying ? Color.white : Color.white.opacity(0.7))
       }
 
       Menu {
@@ -147,6 +180,37 @@ struct ContentView: View {
         Text(formatPlaybackRate(currentPlaybackRate))
           .font(.system(size: 14, weight: .medium))
           .monospacedDigit()
+      }
+
+      Divider()
+        .frame(height: 24)
+
+      Button {
+        triggerDanmakuToggle()
+      } label: {
+        Image(systemName: "bubble.left.and.bubble.right")
+          .font(.title2)
+          .foregroundStyle(isDanmakuEnabled ? Color.cyan : Color.white.opacity(0.7))
+      }
+
+      Button {
+        triggerLike()
+      } label: {
+        Image(systemName: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+          .font(.title2)
+          .foregroundStyle(isLiked ? Color.red : Color.white.opacity(0.7))
+      }
+
+      Button {
+        if isBilibiliVideoPage(url: currentURL) {
+          let _ = triggerBilibiliFullscreen()
+        } else if isBilibiliBangumiPage(url: currentURL) {
+          let _ = triggerBilibiliBangumiFullscreen()
+        }
+      } label: {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+          .font(.title2)
+          .foregroundStyle(isFullscreen ? Color.green : Color.white.opacity(0.7))
       }
 
       Divider()
@@ -197,14 +261,11 @@ struct ContentView: View {
           }
         }
       } label: {
-        HStack(spacing: 4) {
-          Image(systemName: "rectangle.ratio.16.to.9").font(.title2)
-          if detectedVideoSize != .zero {
-            Text(getAspectRatioName()).font(.caption)
-          }
-        }
+        Image(systemName: "rectangle.ratio.16.to.9").font(.title2)
       }
+
     }
+    .foregroundStyle(.white.opacity(0.7))
     .padding(.horizontal, 20)
     .padding(.vertical, 12)
     .glassBackgroundEffect()
@@ -214,46 +275,59 @@ struct ContentView: View {
   // 非视频模式导航栏
   @ViewBuilder
   private var navigationOrnament: some View {
-    HStack {
+    HStack(spacing: 16) {
       Spacer()
+
+      Button {
+        withAnimation(.easeInOut(duration: 0.25)) { showBrowsePanel.toggle() }
+      } label: {
+        Image(systemName: showBrowsePanel ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2")
+          .font(.title2)
+      }
+
+      Divider()
+        .frame(height: 24)
 
       Button {
         webView?.goBack()
       } label: {
-        Label("Back", systemImage: "arrow.backward")
+        Image(systemName: "arrow.backward")
+          .font(.title2)
       }
       .disabled(!(webView?.canGoBack ?? false))
 
       Button {
         currentURL = URL(string: "https://www.bilibili.com")!
       } label: {
-        Label("Home", systemImage: "house")
+        Image(systemName: "house")
+          .font(.title2)
       }
 
-      TextField("Search on Bilibili", text: $searchText)
-        .textFieldStyle(.roundedBorder)
-        .frame(maxWidth: 300)
-        .onSubmit {
-          performSearch()
-        }
+      Divider()
+        .frame(height: 24)
 
       Button {
-        performSearch()
+        showSearchPrompt = true
       } label: {
-        Label("Search", systemImage: "magnifyingglass")
+        Image(systemName: "magnifyingglass")
+          .font(.title2)
       }
-      .disabled(searchText.isEmpty)
+
+      Divider()
+        .frame(height: 24)
 
       Button {
         currentURL = URL(string: "https://www.bilibili.com/history")!
       } label: {
-        Label("", systemImage: "clock.arrow.circlepath")
+        Image(systemName: "clock.arrow.circlepath")
+          .font(.title2)
       }
 
       Button {
         triggerRefresh()
       } label: {
-        Label("Refresh", systemImage: "arrow.clockwise")
+        Image(systemName: "arrow.clockwise")
+          .font(.title2)
       }
 
       Spacer()
@@ -261,6 +335,7 @@ struct ContentView: View {
     .padding(.horizontal, 20)
     .padding(.vertical, 12)
     .glassBackgroundEffect()
+    .padding(.top, 60)
   }
 
   // 获取最接近的宽高比名称
@@ -406,6 +481,9 @@ struct ContentView: View {
         success = false
       } else {
         success = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+          self.syncVideoControlStates()
+        }
       }
       group.leave()
     }
@@ -446,6 +524,7 @@ struct ContentView: View {
             self.isPlaying = (resultString == "played")
           }
         }
+        self.scheduleVideoControlStateSync(after: 0.1)
       }
     }
   }
@@ -469,6 +548,9 @@ struct ContentView: View {
       } else {
         print("JavaScript execution result: \(String(describing: result))")
         success = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+          self.syncVideoControlStates()
+        }
       }
       group.leave()
     }
@@ -623,6 +705,115 @@ struct ContentView: View {
         print("JavaScript execution for danmaku toggle failed: \(error)")
       } else {
         print("Danmaku toggle executed. Result: \(String(describing: result))")
+        self.scheduleVideoControlStateSync(after: 0.15)
+      }
+    }
+  }
+
+  private func triggerLike() {
+    print("Attempting to trigger like.")
+    let script = """
+        (function() {
+          var likeButton = document.querySelector('.video-like.video-toolbar-left-item');
+          if (likeButton) {
+            likeButton.click();
+            return 'liked';
+          }
+
+          var fallbackButton = document.querySelector('[title*="点赞"]');
+          if (fallbackButton) {
+            fallbackButton.click();
+            return 'liked_fallback';
+          }
+
+          return false;
+        })();
+      """
+
+    webView?.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("JavaScript execution for like failed: \(error)")
+      } else {
+        print("Like executed. Result: \(String(describing: result))")
+        self.scheduleVideoControlStateSync(after: 0.15)
+      }
+    }
+  }
+
+  private func scheduleVideoControlStateSync(after delay: TimeInterval) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+      self.syncVideoControlStates()
+    }
+  }
+
+  private func resetVideoControlStates() {
+    isPlaying = false
+    isDanmakuEnabled = false
+    isLiked = false
+    isFullscreen = false
+  }
+
+  private func syncVideoControlStates() {
+    guard isBilibiliPlayablePage(url: currentURL), let webView else { return }
+
+    let script = """
+      (function() {
+        var video = document.querySelector('video');
+        var danmakuSwitch = document.querySelector('.bpx-player-dm-switch input[type="checkbox"]');
+        var danmakuArea = document.querySelector('.bpx-player-dm-switch');
+        var likeButton = document.querySelector('.video-like.video-toolbar-left-item, .video-toolbar-left-item.video-like, [title*="点赞"]');
+        var container = document.querySelector('.bpx-player-container');
+
+        var liked = false;
+        if (likeButton) {
+          liked = likeButton.classList.contains('on')
+            || likeButton.classList.contains('is-active')
+            || likeButton.getAttribute('aria-pressed') === 'true'
+            || likeButton.getAttribute('data-selected') === 'true'
+            || !!likeButton.querySelector('.on, .is-active, [aria-pressed="true"]');
+        }
+
+        var danmakuEnabled = null;
+        if (danmakuSwitch) {
+          danmakuEnabled = !!danmakuSwitch.checked;
+        } else if (danmakuArea) {
+          danmakuEnabled = !(danmakuArea.classList.contains('off') || danmakuArea.classList.contains('disabled'));
+        }
+
+        return {
+          isPlaying: !!(video && !video.paused),
+          playbackRate: video ? video.playbackRate : null,
+          isDanmakuEnabled: danmakuEnabled,
+          isLiked: liked,
+          isFullscreen: !!document.fullscreenElement || !!(container && container.classList.contains('bpx-state-web-fullscreen'))
+        };
+      })();
+    """
+
+    webView.evaluateJavaScript(script) { result, error in
+      if let error = error {
+        print("同步视频按钮状态失败: \(error.localizedDescription)")
+        return
+      }
+
+      guard let dict = result as? [String: Any] else { return }
+
+      DispatchQueue.main.async {
+        if let playing = dict["isPlaying"] as? Bool {
+          self.isPlaying = playing
+        }
+        if let playbackRate = dict["playbackRate"] as? Double {
+          self.currentPlaybackRate = playbackRate
+        }
+        if let danmakuEnabled = dict["isDanmakuEnabled"] as? Bool {
+          self.isDanmakuEnabled = danmakuEnabled
+        }
+        if let liked = dict["isLiked"] as? Bool {
+          self.isLiked = liked
+        }
+        if let fullscreen = dict["isFullscreen"] as? Bool {
+          self.isFullscreen = fullscreen
+        }
       }
     }
   }

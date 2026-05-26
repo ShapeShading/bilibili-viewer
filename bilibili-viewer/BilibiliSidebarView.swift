@@ -247,20 +247,20 @@ class BilibiliAPIClient {
     }
 
     let script = """
-      const response = await fetch(requestURL, {
-        credentials: "include",
-        headers: {
-          Accept: "application/json, text/plain, */*"
-        }
-      });
-      const text = await response.text();
-      return {
-        status: response.status,
-        contentType: response.headers.get("content-type"),
-        finalURL: response.url,
-        text: text
-      };
-    """
+        const response = await fetch(requestURL, {
+          credentials: "include",
+          headers: {
+            Accept: "application/json, text/plain, */*"
+          }
+        });
+        const text = await response.text();
+        return {
+          status: response.status,
+          contentType: response.headers.get("content-type"),
+          finalURL: response.url,
+          text: text
+        };
+      """
 
     return try await withCheckedThrowingContinuation { continuation in
       webView.callAsyncJavaScript(
@@ -269,38 +269,39 @@ class BilibiliAPIClient {
         in: nil,
         in: .page,
         completionHandler: { result in
-        switch result {
-        case .success(let value):
-          guard
-            let dict = value as? [String: Any],
-            let status = dict["status"] as? Int,
-            let text = dict["text"] as? String
-          else {
-            continuation.resume(
-              throwing: NSError(
-                domain: "BilibiliAPIClient", code: -2,
-                userInfo: [NSLocalizedDescriptionKey: "Unexpected webView fetch result shape"])
-            )
-            return
-          }
+          switch result {
+          case .success(let value):
+            guard
+              let dict = value as? [String: Any],
+              let status = dict["status"] as? Int,
+              let text = dict["text"] as? String
+            else {
+              continuation.resume(
+                throwing: NSError(
+                  domain: "BilibiliAPIClient", code: -2,
+                  userInfo: [NSLocalizedDescriptionKey: "Unexpected webView fetch result shape"])
+              )
+              return
+            }
 
-          continuation.resume(
-            returning: WebViewFetchResult(
-              status: status,
-              contentType: dict["contentType"] as? String,
-              finalURL: dict["finalURL"] as? String,
-              text: text
-            ))
-        case .failure(let error):
-          continuation.resume(throwing: error)
-        }
-      })
+            continuation.resume(
+              returning: WebViewFetchResult(
+                status: status,
+                contentType: dict["contentType"] as? String,
+                finalURL: dict["finalURL"] as? String,
+                text: text
+              ))
+          case .failure(let error):
+            continuation.resume(throwing: error)
+          }
+        })
     }
   }
 
   func loadRecommendationsIfNeeded() async {
     if hasLoadedRecommendations {
-      applyDisplayedState(videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
+      applyDisplayedState(
+        videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
       print(
         "API 推荐命中缓存: videos=\(cachedRecommendations.count), error=\(cachedRecommendationErrorMessage ?? "nil")"
       )
@@ -311,7 +312,8 @@ class BilibiliAPIClient {
 
   func fetchRecommendations(force: Bool = true) async {
     if !force && hasLoadedRecommendations {
-      applyDisplayedState(videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
+      applyDisplayedState(
+        videos: cachedRecommendations, errorMessage: cachedRecommendationErrorMessage)
       print(
         "API 推荐跳过请求，直接复用缓存: videos=\(cachedRecommendations.count), error=\(cachedRecommendationErrorMessage ?? "nil")"
       )
@@ -480,7 +482,9 @@ class BilibiliAPIClient {
     errorMessage = nil
     defer { isLoading = false }
 
-    let encoded = trimmedKeyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmedKeyword
+    let encoded =
+      trimmedKeyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+      ?? trimmedKeyword
     let attempts = [(label: "page=\(page)", page: page)]
     var failureSummaries: [String] = []
 
@@ -615,7 +619,8 @@ struct BilibiliPanelView: View {
       VStack(spacing: 8) {
         Text(title)
           .font(.system(size: 15, weight: mode == targetMode ? .semibold : .regular))
-          .foregroundStyle(mode == targetMode ? Color.white.opacity(0.96) : Color.white.opacity(0.72))
+          .foregroundStyle(
+            mode == targetMode ? Color.white.opacity(0.96) : Color.white.opacity(0.72))
 
         Rectangle()
           .fill(mode == targetMode ? Color.primary.opacity(0.9) : Color.clear)
@@ -705,9 +710,9 @@ struct BilibiliPanelView: View {
                 set: { client.searchDraft = $0 }
               )
             )
-              .textFieldStyle(.roundedBorder)
-              .frame(maxWidth: 260)
-              .onSubmit { runSearch(page: 1) }
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 260)
+            .onSubmit { runSearch(page: 1) }
             Button {
               runSearch(page: 1)
             } label: {
@@ -738,7 +743,9 @@ struct BilibiliPanelView: View {
             .font(.title2)
             .foregroundStyle(.secondary)
             .frame(width: 36, height: 36)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(
+              Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
             .overlay(
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
@@ -768,7 +775,8 @@ struct BilibiliPanelView: View {
                 } else if mode == .upNext {
                   await client.fetchUpNext(for: currentURL)
                 } else {
-                  await client.searchVideos(keyword: client.searchDraft, page: client.searchPage, pageSize: 10)
+                  await client.searchVideos(
+                    keyword: client.searchDraft, page: client.searchPage, pageSize: 10)
                 }
               }
             }

@@ -757,38 +757,38 @@ struct ContentView: View {
     guard isBilibiliPlayablePage(url: currentURL), let webView else { return }
 
     let script = """
-      (function() {
-        var video = document.querySelector('video');
-        var danmakuSwitch = document.querySelector('.bpx-player-dm-switch input[type="checkbox"]');
-        var danmakuArea = document.querySelector('.bpx-player-dm-switch');
-        var likeButton = document.querySelector('.video-like.video-toolbar-left-item, .video-toolbar-left-item.video-like, [title*="点赞"]');
-        var container = document.querySelector('.bpx-player-container');
+        (function() {
+          var video = document.querySelector('video');
+          var danmakuSwitch = document.querySelector('.bpx-player-dm-switch input[type="checkbox"]');
+          var danmakuArea = document.querySelector('.bpx-player-dm-switch');
+          var likeButton = document.querySelector('.video-like.video-toolbar-left-item, .video-toolbar-left-item.video-like, [title*="点赞"]');
+          var container = document.querySelector('.bpx-player-container');
 
-        var liked = false;
-        if (likeButton) {
-          liked = likeButton.classList.contains('on')
-            || likeButton.classList.contains('is-active')
-            || likeButton.getAttribute('aria-pressed') === 'true'
-            || likeButton.getAttribute('data-selected') === 'true'
-            || !!likeButton.querySelector('.on, .is-active, [aria-pressed="true"]');
-        }
+          var liked = false;
+          if (likeButton) {
+            liked = likeButton.classList.contains('on')
+              || likeButton.classList.contains('is-active')
+              || likeButton.getAttribute('aria-pressed') === 'true'
+              || likeButton.getAttribute('data-selected') === 'true'
+              || !!likeButton.querySelector('.on, .is-active, [aria-pressed="true"]');
+          }
 
-        var danmakuEnabled = null;
-        if (danmakuSwitch) {
-          danmakuEnabled = !!danmakuSwitch.checked;
-        } else if (danmakuArea) {
-          danmakuEnabled = !(danmakuArea.classList.contains('off') || danmakuArea.classList.contains('disabled'));
-        }
+          var danmakuEnabled = null;
+          if (danmakuSwitch) {
+            danmakuEnabled = !!danmakuSwitch.checked;
+          } else if (danmakuArea) {
+            danmakuEnabled = !(danmakuArea.classList.contains('off') || danmakuArea.classList.contains('disabled'));
+          }
 
-        return {
-          isPlaying: !!(video && !video.paused),
-          playbackRate: video ? video.playbackRate : null,
-          isDanmakuEnabled: danmakuEnabled,
-          isLiked: liked,
-          isFullscreen: !!document.fullscreenElement || !!(container && container.classList.contains('bpx-state-web-fullscreen'))
-        };
-      })();
-    """
+          return {
+            isPlaying: !!(video && !video.paused),
+            playbackRate: video ? video.playbackRate : null,
+            isDanmakuEnabled: danmakuEnabled,
+            isLiked: liked,
+            isFullscreen: !!document.fullscreenElement || !!(container && container.classList.contains('bpx-state-web-fullscreen'))
+          };
+        })();
+      """
 
     webView.evaluateJavaScript(script) { result, error in
       if let error = error {

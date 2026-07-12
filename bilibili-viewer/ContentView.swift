@@ -12,6 +12,8 @@ import WebKit
 
 struct ContentView: View {
   @Environment(AppModel.self) var appModel
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.dismissWindow) private var dismissWindow
   @State private var currentURL: URL
   @State private var searchText: String = ""
   @State private var showSearchPrompt = false
@@ -23,8 +25,6 @@ struct ContentView: View {
   @State private var videoAspectRatio: CGFloat = 16.0 / 9.0  // 视频宽高比，默认 16:9
   @State private var detectedVideoSize: CGSize = .zero  // 检测到的视频尺寸
   @State private var currentPlaybackRate: Double = 1.0  // 当前播放倍速
-  @State private var showBrowsePanel = false  // 是否显示视频浏览浮层
-  @State private var browseClient = BilibiliAPIClient()
 
   // 倍速预设
   private let playbackRates: [Double] = [1.0, 1.25, 1.5, 2.0]
@@ -57,6 +57,15 @@ struct ContentView: View {
     }
   }
 
+  // 打开/关闭独立的推荐-搜索窗口（不遮挡当前视频窗口，选中视频仍在本窗口播放）
+  private func toggleBrowsePanelWindow() {
+    if appModel.isBrowsePanelWindowOpen {
+      dismissWindow(id: AppModel.browsePanelWindowID)
+    } else {
+      openWindow(id: AppModel.browsePanelWindowID)
+    }
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       WebView(url: $currentURL, currentWebViewInstance: $webView) {
@@ -74,24 +83,18 @@ struct ContentView: View {
       }
     }
     .onChange(of: webView) { _, newWebView in
-      browseClient.attachWebView(newWebView)
+      appModel.browseClient.attachWebView(newWebView)
       print("BilibiliAPIClient webView attached: \(newWebView != nil)")
     }
     .onAppear {
-      browseClient.attachWebView(webView)
+      appModel.browseClient.attachWebView(webView)
+      appModel.browsingURL = currentURL
     }
-    .overlay(alignment: .bottom) {
-      if showBrowsePanel {
-        BilibiliPanelView(
-          currentURL: $currentURL,
-          isVisible: $showBrowsePanel,
-          client: browseClient
-        )
-        .containerRelativeFrame(.vertical, count: 2, span: 1, spacing: 0)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-      }
+    .onChange(of: appModel.pendingBrowseSelectionURL) { _, newValue in
+      guard let newValue else { return }
+      currentURL = newValue
+      appModel.pendingBrowseSelectionURL = nil
     }
-    .animation(.easeInOut(duration: 0.25), value: showBrowsePanel)
     .frame(
       minWidth: 800,
       idealWidth: max(appModel.windowAspectRatio * 980, 880),
@@ -102,6 +105,7 @@ struct ContentView: View {
     )
     .onChange(of: currentURL) { _, newURL in
       print("Current URL changed to: \(newURL.absoluteString)")
+      appModel.browsingURL = newURL
       if isBilibiliPlayablePage(url: newURL) {
         scheduleVideoControlStateSync(after: 0.5)
       } else {
@@ -136,10 +140,13 @@ struct ContentView: View {
   private var videoControlsOrnament: some View {
     HStack(spacing: 16) {
       Button {
-        withAnimation(.easeInOut(duration: 0.25)) { showBrowsePanel.toggle() }
+        toggleBrowsePanelWindow()
       } label: {
-        Image(systemName: showBrowsePanel ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2")
-          .font(.title2)
+        Image(
+          systemName: appModel.isBrowsePanelWindowOpen
+            ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2"
+        )
+        .font(.title2)
       }
 
       Divider()
@@ -279,10 +286,13 @@ struct ContentView: View {
       Spacer()
 
       Button {
-        withAnimation(.easeInOut(duration: 0.25)) { showBrowsePanel.toggle() }
+        toggleBrowsePanelWindow()
       } label: {
-        Image(systemName: showBrowsePanel ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2")
-          .font(.title2)
+        Image(
+          systemName: appModel.isBrowsePanelWindowOpen
+            ? "rectangle.grid.2x2.fill" : "rectangle.grid.2x2"
+        )
+        .font(.title2)
       }
 
       Divider()

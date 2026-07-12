@@ -590,8 +590,8 @@ class BilibiliAPIClient {
 // MARK: - Panel View (floating overlay, covers bottom 2/3 of the video)
 
 struct BilibiliPanelView: View {
-  @Binding var currentURL: URL
-  @Binding var isVisible: Bool
+  @Environment(AppModel.self) private var appModel
+  @Environment(\.dismissWindow) private var dismissWindow
   var client: BilibiliAPIClient
   @AppStorage("bilibili.panel.mode") private var modeRawValue = SidebarMode.recommend.rawValue
 
@@ -663,9 +663,9 @@ struct BilibiliPanelView: View {
     case .upNext:
       Task {
         if force {
-          await client.fetchUpNext(for: currentURL)
+          await client.fetchUpNext(for: appModel.browsingURL)
         } else {
-          await client.loadUpNextIfNeeded(for: currentURL)
+          await client.loadUpNextIfNeeded(for: appModel.browsingURL)
         }
       }
     case .search:
@@ -737,7 +737,7 @@ struct BilibiliPanelView: View {
           .frame(height: 24)
 
         Button {
-          withAnimation(.easeInOut(duration: 0.25)) { isVisible = false }
+          dismissWindow(id: AppModel.browsePanelWindowID)
         } label: {
           Image(systemName: "chevron.down")
             .font(.title2)
@@ -773,7 +773,7 @@ struct BilibiliPanelView: View {
                 if mode == .recommend {
                   await client.fetchRecommendations()
                 } else if mode == .upNext {
-                  await client.fetchUpNext(for: currentURL)
+                  await client.fetchUpNext(for: appModel.browsingURL)
                 } else {
                   await client.searchVideos(
                     keyword: client.searchDraft, page: client.searchPage, pageSize: 10)
@@ -802,7 +802,7 @@ struct BilibiliPanelView: View {
                 ForEach(client.videos) { video in
                   Button {
                     if let url = video.videoURL {
-                      currentURL = url
+                      appModel.pendingBrowseSelectionURL = url
                     }
                   } label: {
                     VideoThumbnailView(video: video)
@@ -832,10 +832,26 @@ struct BilibiliPanelView: View {
     .onChange(of: modeRawValue) { _, newValue in
       loadCurrentMode()
     }
-    .onChange(of: currentURL) { _, newURL in
+    .onChange(of: appModel.browsingURL) { _, newURL in
       guard mode == .upNext else { return }
       Task { await client.loadUpNextIfNeeded(for: newURL) }
     }
+  }
+}
+
+// MARK: - Standalone Browse Window
+
+/// 独立的推荐/接下来播放/搜索窗口。与视频窗口并列摆放，不遮挡视频画面；
+/// 在这里点击视频后，通过 AppModel.pendingBrowseSelectionURL 通知主视频窗口切换播放地址，
+/// 视频本身依然在原来的视频窗口中播放。
+struct BrowsePanelWindowView: View {
+  @Environment(AppModel.self) private var appModel
+
+  var body: some View {
+    BilibiliPanelView(client: appModel.browseClient)
+      .frame(minWidth: 900, minHeight: 480)
+      .onAppear { appModel.isBrowsePanelWindowOpen = true }
+      .onDisappear { appModel.isBrowsePanelWindowOpen = false }
   }
 }
 

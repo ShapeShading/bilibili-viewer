@@ -6,6 +6,35 @@ struct WebView: UIViewRepresentable {
   @Binding var currentWebViewInstance: WKWebView?
   var onPageFinishLoad: ((URL) -> Void)?  // Callback for when page finishes loading
 
+  private func normalizedURL(_ input: URL?) -> URL? {
+    guard let input else { return nil }
+    guard var components = URLComponents(url: input, resolvingAgainstBaseURL: false) else {
+      return input
+    }
+
+    let ignoredQueryItems: Set<String> = [
+      "vd_source",
+      "spm_id_from",
+      "from_source",
+      "search_source",
+    ]
+
+    if let queryItems = components.queryItems, !queryItems.isEmpty {
+      let filteredItems = queryItems.filter { !ignoredQueryItems.contains($0.name) }
+      components.queryItems = filteredItems.isEmpty ? nil : filteredItems
+    }
+
+    if components.path.hasSuffix("/") && components.path.count > 1 {
+      components.path.removeLast()
+    }
+
+    return components.url ?? input
+  }
+
+  private func normalizedURLString(_ input: URL?) -> String {
+    normalizedURL(input)?.absoluteString ?? ""
+  }
+
   func makeUIView(context: Context) -> WKWebView {
     print("WebView: makeUIView called. Creating new WKWebView for URL: \(url.absoluteString)")  // DEBUG
     let config = WKWebViewConfiguration()
@@ -51,37 +80,50 @@ struct WebView: UIViewRepresentable {
     DispatchQueue.main.async {
       context.coordinator.parent.currentWebViewInstance = wkWebView
     }
+
+    // KVO: keep the binding in sync with every URL change in the webview (including
+    // SPA history.pushState / replaceState used by B站 for episode switching).
+    context.coordinator.startObservingURL(wkWebView)
+
     return wkWebView
   }
 
   func updateUIView(_ uiView: WKWebView, context: Context) {
+    context.coordinator.onPageFinishLoad = onPageFinishLoad
+    let normalizedCurrentURL = normalizedURLString(uiView.url)
+    let normalizedTargetURL = normalizedURLString(url)
     print(
-      "WebView: updateUIView called. Target URL: \(url.absoluteString). Current uiView.url: \(uiView.url?.absoluteString ?? "nil")"
-    )  // DEBUG
-    context.coordinator.onPageFinishLoad = onPageFinishLoad  // Ensure coordinator has the latest callback
-    // Only load if the URL is different from the current one to avoid reload loops
-    // and ensure that programmatic URL changes from ContentView are reflected.
-    var currentURL = uiView.url?.absoluteString ?? ""
-    currentURL = currentURL.replacingOccurrences(of: "%3A", with: ":")
-    do {
-      // dirty trick to avoid reload loop
-      let regex = try NSRegularExpression(pattern: "&vd_source=[^&]*", options: [])
-      currentURL = regex.stringByReplacingMatches(
-        in: currentURL, options: [], range: NSRange(location: 0, length: currentURL.utf16.count),
-        withTemplate: ""
-      )
-    } catch {
-      print("Error creating regex: \(error)")
+      "WebView: updateUIView target=\(normalizedTargetURL) current=\(normalizedCurrentURL) pending=\(context.coordinator.pendingExternalNavigationURLString ?? "nil") webViewIsLoading=\(uiView.isLoading)"
+    )
+
+    if normalizedCurrentURL == normalizedTargetURL {
+      context.coordinator.pendingExternalNavigationURLString = nil
+      print("WebView: ✓ URL match, no reload")
+      return
     }
-    if currentURL != url.absoluteString {
+
+    // If we already kicked off an external load for this exact URL, don't fire again.
+    if context.coordinator.pendingExternalNavigationURLString == normalizedTargetURL {
+      print("WebView: ✓ External navigation already in flight, skip reload")
+      return
+    }
+
+    // If the webview is in the middle of a navigation that we did NOT initiate
+    // (pendingExternal is nil), and the binding itself hasn't changed since last
+    // render, then this is a stale SwiftUI re-render racing against an internal
+    // navigation — skip to avoid resetting the page.
+    if uiView.isLoading, context.coordinator.pendingExternalNavigationURLString == nil {
       print(
-        "WebView: Reloading - target URL (\(url.absoluteString)) is different from uiView.url (\(uiView.url?.absoluteString ?? "nil"))."
-      )  // DEBUG
-      let request = URLRequest(url: url)
-      uiView.load(request)
-    } else {
-      print("WebView: Not reloading - URL strings match.")  // DEBUG
+        "WebView: ✓ Internal navigation in progress, skip reload (binding=\(normalizedTargetURL) webView=\(normalizedCurrentURL))"
+      )
+      return
     }
+
+    print(
+      "WebView: ↺ Reload triggered. binding=\(normalizedTargetURL) webView=\(normalizedCurrentURL)"
+    )
+    context.coordinator.pendingExternalNavigationURLString = normalizedTargetURL
+    uiView.load(URLRequest(url: url))
   }
 
   func makeCoordinator() -> Coordinator {
@@ -91,28 +133,78 @@ struct WebView: UIViewRepresentable {
   class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {  // Add WKUIDelegate
     var parent: WebView
     var onPageFinishLoad: ((URL) -> Void)?
+    var pendingExternalNavigationURLString: String?
+    private var urlObservation: NSKeyValueObservation?
 
     init(_ parent: WebView, onPageFinishLoad: ((URL) -> Void)?) {
       self.parent = parent
       self.onPageFinishLoad = onPageFinishLoad
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-      // If navigation finishes and the URL is different, update the binding.
-      // This allows ContentView to know the current URL even if the user navigates within the WebView.
-      if let newURL = webView.url {
-        if newURL.absoluteString != parent.url.absoluteString {
-          DispatchQueue.main.async {
-            self.parent.url = newURL
-          }
-        }
-
-        // 注入CSS样式来优化VisionOS显示效果
-        injectVisionOSOptimizedCSS(webView: webView)
-
-        // Call the onPageFinishLoad callback
-        onPageFinishLoad?(newURL)
+    // KVO on webView.url fires for ALL URL changes: navigation commit, pushState, replaceState.
+    // This ensures the binding stays ahead of any updateUIView call and prevents stale-URL reloads.
+    func startObservingURL(_ webView: WKWebView) {
+      urlObservation = webView.observe(\WKWebView.url, options: [.new]) { [weak self] observed, _ in
+        guard let self else { return }
+        guard let newURL = observed.url else { return }
+        let normalizedNew = self.parent.normalizedURL(newURL) ?? newURL
+        let normalizedCurrent = self.parent.normalizedURL(self.parent.url)
+        guard normalizedNew.absoluteString != normalizedCurrent?.absoluteString else { return }
+        print(
+          "WebView: KVO url changed → \(normalizedNew.absoluteString) (was \(normalizedCurrent?.absoluteString ?? "nil"))"
+        )
+        self.parent.url = normalizedNew
       }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      if let newURL = webView.url {
+        let normalizedNewURL = parent.normalizedURL(newURL) ?? newURL
+        pendingExternalNavigationURLString = nil
+        // KVO already syncs binding on URL change; update here as a safety net for
+        // cases where KVO fires after didFinish (e.g. server-side redirects).
+        if normalizedNewURL.absoluteString != parent.normalizedURL(parent.url)?.absoluteString {
+          print("WebView: didFinish safety-net binding update → \(normalizedNewURL.absoluteString)")
+          parent.url = normalizedNewURL
+        }
+        injectVisionOSOptimizedCSS(webView: webView)
+        print("WebView: didFinish. URL=\(newURL.absoluteString)")
+        onPageFinishLoad?(normalizedNewURL)
+      }
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+      // NOTE: this does NOT fire for history.pushState / replaceState (SPA-style navigation).
+      // Those are handled by the KVO observer on webView.url.
+      print(
+        "WebView: didStartProvisionalNavigation. URL=\(webView.url?.absoluteString ?? "nil") pending=\(pendingExternalNavigationURLString ?? "nil")"
+      )
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+      // KVO fires here (webView.url is set at commit time), so binding is updated before
+      // any subsequent updateUIView call.
+      print("WebView: didCommit. URL=\(webView.url?.absoluteString ?? "nil")")
+    }
+
+    func webView(
+      _ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+      if let httpResp = navigationResponse.response as? HTTPURLResponse {
+        print("WebView: HTTP \(httpResp.statusCode) <- \(httpResp.url?.absoluteString ?? "nil")")
+      }
+      decisionHandler(.allow)
+    }
+
+    func webView(
+      _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+      print(
+        "WebView: decidePolicyFor \(navigationAction.navigationType.rawValue) -> \(navigationAction.request.url?.absoluteString ?? "nil")"
+      )
+      decisionHandler(.allow)
     }
 
     private func injectVisionOSOptimizedCSS(webView: WKWebView) {
@@ -126,11 +218,22 @@ struct WebView: UIViewRepresentable {
           /* 优化滚动条 */
           ::-webkit-scrollbar {
             width: 16px !important;
+            height: 10px !important;
+          }
+
+          /* 轨道：深色背景，比 SwiftUI 玻璃面板更深 */
+          ::-webkit-scrollbar-track {
+            background-color: rgba(10, 10, 15, 0.85) !important;
+            border-radius: 8px !important;
           }
 
           ::-webkit-scrollbar-thumb {
-            background-color: rgba(0,0,0,0.3) !important;
+            background-color: rgba(80, 140, 255, 0.75) !important;
             border-radius: 8px !important;
+          }
+
+          ::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(100, 160, 255, 0.95) !important;
           }
 
           /* B站视频播放器进度条优化 */
@@ -178,27 +281,30 @@ struct WebView: UIViewRepresentable {
           }
         """
 
+      // 末尾加 ; null 避免 evaluateJavaScript 返回不可序列化的 DOM element
       let jsCode =
-        "var style = document.createElement('style'); style.innerHTML = `\(cssCode)`; document.head.appendChild(style);"
+        "var style = document.createElement('style'); style.innerHTML = `\(cssCode)`; document.head.appendChild(style); null;"
 
-      webView.evaluateJavaScript(jsCode) { result, error in
+      webView.evaluateJavaScript(jsCode) { _, error in
         if let error = error {
-          print("CSS注入失败: \(error.localizedDescription)")
+          print("WebView: CSS注入失败: \(error.localizedDescription)")
         } else {
-          print("VisionOS触控优化CSS注入成功")
+          print("WebView: CSS注入成功")
         }
       }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-      print("WebView navigation failed: \(error.localizedDescription)")
+      pendingExternalNavigationURLString = nil
+      print("WebView: ✗ didFail: \(error.localizedDescription)")
     }
 
     func webView(
       _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
       withError error: Error
     ) {
-      print("WebView provisional navigation failed: \(error.localizedDescription)")
+      pendingExternalNavigationURLString = nil
+      print("WebView: ✗ didFailProvisional: \(error.localizedDescription)")
     }
 
     // Handle requests to open new windows

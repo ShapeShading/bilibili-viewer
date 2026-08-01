@@ -28,6 +28,7 @@ struct bilibili_viewerApp: App {
     }
     .windowStyle(.plain)
     .windowResizability(.contentSize)
-    .defaultSize(width: 1400, height: 620)
+    // 两行推荐卡片加上标题栏与少量边距，避免默认窗口底部出现大块留白。
+    .defaultSize(width: 1400, height: 420)
   }
 }

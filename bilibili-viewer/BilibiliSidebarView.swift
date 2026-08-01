@@ -820,12 +820,7 @@ struct BilibiliPanelView: View {
       }
     }
     .background(.ultraThinMaterial)
-    .clipShape(
-      UnevenRoundedRectangle(
-        topLeadingRadius: 16, bottomLeadingRadius: 0,
-        bottomTrailingRadius: 0, topTrailingRadius: 16,
-        style: .continuous)
-    )
+    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     .task {
       loadCurrentMode()
     }
@@ -849,7 +844,7 @@ struct BrowsePanelWindowView: View {
 
   var body: some View {
     BilibiliPanelView(client: appModel.browseClient)
-      .frame(minWidth: 900, minHeight: 480)
+      .frame(minWidth: 900, minHeight: 400)
       .onAppear { appModel.isBrowsePanelWindowOpen = true }
       .onDisappear { appModel.isBrowsePanelWindowOpen = false }
   }

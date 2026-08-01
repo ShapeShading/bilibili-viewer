@@ -1,6 +1,7 @@
 {
   "images" : [
     {
+      "filename" : "Bilibili.png",
       "idiom" : "vision",
       "scale" : "2x"
     }
